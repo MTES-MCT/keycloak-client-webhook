@@ -3,30 +3,31 @@
  */
 package io.binarybrew.keycloak.webhook.listeners;
 
+import com.fasterxml.jackson.databind.JsonNode;
 import io.binarybrew.keycloak.webhook.constant.AppConstants;
 import io.binarybrew.keycloak.webhook.data.dto.KeycloakUserEventDTO;
-import org.apache.hc.client5.http.config.RequestConfig;
-import org.apache.hc.client5.http.cookie.StandardCookieSpec;
-import org.apache.hc.client5.http.impl.classic.HttpClients;
-import org.jboss.logging.Logger;
+import io.binarybrew.keycloak.webhook.data.dto.OrgDetailDTO;
+import io.binarybrew.keycloak.webhook.util.RequestUtils;
+import org.apache.hc.client5.http.classic.methods.HttpPost;
+import org.apache.hc.core5.http.ContentType;
+import org.apache.hc.core5.http.io.entity.StringEntity;
 import org.keycloak.events.Event;
 import org.keycloak.events.EventListenerProvider;
 import org.keycloak.events.EventType;
 import org.keycloak.events.admin.AdminEvent;
-import org.keycloak.models.ClientModel;
+import org.keycloak.events.admin.OperationType;
+import org.keycloak.events.admin.ResourceType;
 import org.keycloak.models.KeycloakSession;
 import org.keycloak.models.RealmModel;
+import org.keycloak.models.RoleModel;
 import org.keycloak.models.UserModel;
-import org.springframework.http.HttpEntity;
-import org.springframework.http.HttpHeaders;
-import org.springframework.http.MediaType;
-import org.springframework.http.ResponseEntity;
-import org.springframework.http.client.HttpComponentsClientHttpRequestFactory;
-import org.springframework.web.client.RestClient;
+import org.keycloak.organization.OrganizationProvider;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 
-import java.util.Map;
-import java.util.concurrent.ScheduledExecutorService;
+import java.util.*;
 import java.util.concurrent.TimeUnit;
+import java.util.stream.Collectors;
 
 /**
  * The WebhookEventListenerProvider is an implementation of the Keycloak
@@ -55,20 +56,22 @@ import java.util.concurrent.TimeUnit;
 public class WebhookEventListenerProvider implements EventListenerProvider {
 
     private final KeycloakSession session;
-    private final ScheduledExecutorService scheduledExecutorService;
+    private final WebhookEventListenerProviderFactory factory;
 
-        public static final Logger LOGGER = Logger.getLogger(WebhookEventListenerProvider.class);
+    private static final Logger LOGGER = LoggerFactory.getLogger(WebhookEventListenerProvider.class);
 
-    /**
-     * Constructs a new WebhookEventListenerProvider with the specified Keycloak session
-     * and executor service for asynchronous webhook execution.
-     *
-     * @param session The Keycloak session for accessing Keycloak services and models
-     * @param scheduledExecutorService The executor service for asynchronous webhook execution
-     */
-    public WebhookEventListenerProvider(KeycloakSession session, ScheduledExecutorService scheduledExecutorService) {
+    private static final Set<EventType> SUPPORTED_EVENTS = EnumSet.of(
+            EventType.REGISTER, EventType.RESET_PASSWORD, EventType.LOGIN,
+            EventType.LOGOUT, EventType.VERIFY_EMAIL, EventType.UPDATE_EMAIL,
+            EventType.DELETE_ACCOUNT
+    );
+
+    public WebhookEventListenerProvider(
+            KeycloakSession session,
+            WebhookEventListenerProviderFactory factory
+    ) {
         this.session = session;
-        this.scheduledExecutorService = scheduledExecutorService;
+        this.factory = factory;
     }
 
     /**
@@ -106,75 +109,56 @@ public class WebhookEventListenerProvider implements EventListenerProvider {
      */
     @Override
     public void onEvent(Event event) {
-
-        // Get ClientModel from the session context
-        ClientModel clientModel = session.getContext().getClient();
-        if (clientModel != null) {
-            // Get the Webhook URL and API Key from the client attributes
-            // This should be done during setting up the keycloak client (through its Admin API)
-            String apiUrl = clientModel.getAttribute(AppConstants.API_URL);
-            String apiKey = clientModel.getAttribute(AppConstants.API_KEY);
-            boolean disableLogin = (
-                    clientModel.getAttribute(AppConstants.DISABLE_AUTOLOGIN) != null &&
-                            clientModel.getAttribute(AppConstants.DISABLE_AUTOLOGIN).equals("true")
-            );
-
-            // Validate configuration before proceeding
-            // validateConfiguration(apiUrl, apiKey);
-            if (apiUrl == null || apiUrl.trim().isEmpty() || apiKey == null || apiKey.trim().isEmpty()) {
-                LOGGER.debugf("%s: %s, %s: %s, %s: %s",
-                        AppConstants.API_URL, apiUrl,
-                        AppConstants.API_KEY, apiKey,
-                        AppConstants.DISABLE_AUTOLOGIN, disableLogin);
-                return;
-            }
-
-            RealmModel realmModel = session.realms().getRealm(event.getRealmId());
-            session.getContext().setRealm(realmModel);
-
-            LOGGER.debugf("WebhookEventListenerProvider > onEvent(event) > ClientModel: %s", clientModel.getClientId());
-            LOGGER.debugf("WebhookEventListenerProvider > onEvent(event) > RealmModel: %s", realmModel.getName());
-            LOGGER.debugf("WebhookEventListenerProvider > onEvent(event) > User ID: %s", event.getUserId());
-
+        LOGGER.info("Webhook event received: type={}, userId={}, realmId={}", event.getType().name(), event.getUserId(), event.getRealmId());
+        KeycloakSessionDetails keycloakSessionDetails;
+        try {
+            keycloakSessionDetails = new KeycloakSessionDetails(session, event.getRealmId(), event.getUserId());
+        } catch (IllegalStateException e) {
+            LOGGER.error("WebhookEventListenerProvider > onEvent(event) > ClientModel is null.");
+            return;
+        } catch (NoWebhookDetailException e) {
+            LOGGER.debug("{}", e.getMessage());
+            return;
+        } catch (NoUserFoundException e) {
+            LOGGER.debug("{}", e.getMessage());
             // Handle registration error
-            if (event.getType() == EventType.REGISTER_ERROR && event.getUserId() == null) {
+            if (event.getType() == EventType.REGISTER_ERROR) {
                 if (event.getDetails() != null) {
-                    LOGGER.errorf("%s for %s", EventType.REGISTER_ERROR.name(), event.getDetails().get(AppConstants.EVENT_DETAIL_EMAIL));
-                    sendWebhookRequestForError(event, apiUrl, apiKey);
+                    LOGGER.error("{} for {}", EventType.REGISTER_ERROR.name(), event.getDetails().get("email"));
+                    sendWebhookRequestForError(event, e.apiUrl, e.apiKey, false, AppConstants.DEFAULT_TRUSTED_PROXY_COUNT);
                 }
                 return;
             }
+            return;
+        }
+        // disable auto login after user registration
+        if (keycloakSessionDetails.disableLogin && event.getType() == EventType.REGISTER &&
+                event.getSessionId() != null && keycloakSessionDetails.userModel != null) {
+            disableAutoLogin(keycloakSessionDetails.realmModel, keycloakSessionDetails.userModel);
+        }
 
-            // Ignore if the user doesn't exist
-            if (event.getUserId() == null) {
-                LOGGER.debugf("WebhookEventListenerProvider > onEvent(event) > User ID is null.");
-                return;
-            }
-
-            UserModel user = session.users().getUserById(realmModel, event.getUserId());
-
-            // disable auto login after user registration
-            if (disableLogin && event.getType() == EventType.REGISTER &&
-                    event.getSessionId() != null && user != null) {
-                disableAutoLogin(realmModel, user);
-            }
-
-            // Handle different events
-            if ((user != null) && (event.getType() == EventType.REGISTER || event.getType() == EventType.RESET_PASSWORD ||
-                    event.getType() == EventType.LOGIN || event.getType() == EventType.LOGOUT ||
-                    event.getType() == EventType.VERIFY_EMAIL || event.getType() == EventType.UPDATE_EMAIL ||
-                    event.getType() == EventType.DELETE_ACCOUNT)
-            ) {
-                sendWebhookRequest(event, user, apiUrl, apiKey);
-            }
-        } else {
-            LOGGER.errorf("WebhookEventListenerProvider > onEvent(event) > ClientModel is null.");
+        // Handle different events
+        if (keycloakSessionDetails.userModel != null && SUPPORTED_EVENTS.contains(event.getType())) {
+            sendWebhookRequest(event, keycloakSessionDetails.userModel, keycloakSessionDetails.apiUrl, keycloakSessionDetails.apiKey, false, keycloakSessionDetails.trustedProxyCount);
         }
     }
 
     @Override
     public void onEvent(AdminEvent adminEvent, boolean includeRepresentation) {
-        //
+        if (adminEvent.getResourceType() != ResourceType.USER) return;
+
+        RealmModel realm = session.realms().getRealm(adminEvent.getRealmId());
+        if (realm == null) {
+            LOGGER.warn("Admin event: realm not found for id {}", adminEvent.getRealmId());
+            return;
+        }
+
+        OperationType opType = adminEvent.getOperationType();
+        if (opType == OperationType.DELETE) {
+            handleAdminDelete(adminEvent, realm, includeRepresentation);
+        } else if (opType == OperationType.UPDATE) {
+            handleAdminUpdate(adminEvent, realm);
+        }
     }
 
     @Override
@@ -185,238 +169,190 @@ public class WebhookEventListenerProvider implements EventListenerProvider {
     /**
      * Sends a webhook request to an external API with user event data asynchronously.
      * <p>
-     * This method constructs a payload with user event information and schedules an asynchronous
-     * HTTP POST request to the configured endpoint using a ScheduledExecutorService.
-     * It implements a retry mechanism with exponential backoff to handle temporary failures.
-     * <p>
-     * The method performs the following steps:
-     * <ol>
-     * <li>Validates the configuration (throws IllegalStateException if invalid)</li>
-     * <li>Creates a payload with user event data</li>
-     * <li>Submits an asynchronous task to the executor service to send the webhook</li>
-     * </ol>
+     * Constructs a payload with user event information and schedules an asynchronous HTTP POST request
+     * to the configured endpoint. Implements retry mechanism with exponential backoff for transient failures.
      *
      * @param event The Keycloak event that triggered this webhook
      * @param user The user model associated with the event
      * @param apiUrl The webhook URL to send the request to
      * @param apiKey The API key used for authentication with the webhook endpoint
-     *
-     * @throws IllegalStateException if the webhook URL or API key is not configured
+     * @param adminEvent Whether this is an admin-triggered event
+     * @param trustedProxyCount Number of trusted proxies for client IP extraction
      */
-    private void sendWebhookRequest(Event event, UserModel user, String apiUrl, String apiKey) throws IllegalStateException {
-        try {
-            // Create the payload with user event data
-            final KeycloakUserEventDTO payload = createPayload(event.getType(), user);
-
-            // Submit the webhook task to the executor service for asynchronous execution
-            scheduledExecutorService.submit(() -> executeWebhookWithRetries(apiUrl, apiKey, payload));
-        } catch (IllegalStateException e) {
-            // Log configuration errors but don't retry - these are not transient errors
-            LOGGER.errorf("Webhook configuration error: %s", e.getMessage());
-        } catch (Exception e) {
-            // Log any other unexpected errors
-            LOGGER.errorf("Unexpected error scheduling webhook: %s", e.getMessage());
-        }
+    private void sendWebhookRequest(Event event, UserModel user, String apiUrl, String apiKey, boolean adminEvent, int trustedProxyCount) throws IllegalStateException {
+        sendWebhookAsync(event.getType().name(), apiUrl, apiKey, () -> createPayload(event.getType().name(), user, adminEvent, trustedProxyCount), "event");
     }
 
     /**
-     * Sends a webhook request for error events to an external API asynchronously.
+     * Sends a webhook request for error events with partial user information.
      * <p>
-     * This method is specifically designed to handle error events, such as registration failures,
-     * by extracting available information from the event details and sending it to the webhook endpoint.
-     * Unlike the regular event handler, this method works with incomplete user data since the error
-     * typically occurs before a user record is fully created.
-     * <p>
-     * The method follows the same asynchronous execution pattern and retry mechanism as the
-     * standard webhook request method.
+     * Handles error scenarios (e.g., REGISTER_ERROR) where a complete user model is not available.
+     * Extracts whatever information is available from the event details map.
      *
-     * @param event The Keycloak event containing error information
+     * @param event The Keycloak error event
      * @param apiUrl The webhook URL to send the request to
      * @param apiKey The API key used for authentication with the webhook endpoint
-     * 
-     * @throws IllegalStateException if the webhook URL or API key is not configured properly
+     * @param adminEvent Whether this is an admin-triggered event
+     * @param trustedProxyCount Number of trusted proxies for client IP extraction
      */
-    private void sendWebhookRequestForError(Event event, String apiUrl, String apiKey) throws IllegalStateException {
-        try {
-            // Create the payload with error event data from event details
-            final KeycloakUserEventDTO payload = createPayloadForError(event.getType().name(), event.getDetails());
+    private void sendWebhookRequestForError(Event event, String apiUrl, String apiKey, boolean adminEvent, int trustedProxyCount) throws IllegalStateException {
+        sendWebhookAsync(event.getType().name(), apiUrl, apiKey, () -> createPayloadForError(event.getType().name(), event.getDetails(), adminEvent, trustedProxyCount), "error event");
+    }
 
-            // Submit the webhook task to the executor service for asynchronous execution
-            scheduledExecutorService.submit(() -> executeWebhookWithRetries(apiUrl, apiKey, payload));
+    private void sendWebhookAsync(String eventType, String apiUrl, String apiKey, PayloadSupplier payloadSupplier, String logContext) {
+        try {
+            if (factory.getCircuitBreaker().isOpen()) {
+                LOGGER.warn("Circuit breaker open, skipping webhook for {} {}", logContext, eventType);
+                return;
+            }
+
+            final KeycloakUserEventDTO payload = payloadSupplier.get();
+            LOGGER.info("Submitting {} webhook to executor pool: apiUrl={}", eventType, apiUrl);
+            factory.getExecutorService().submit(() -> executeWebhookWithRetries(apiUrl, apiKey, payload));
         } catch (IllegalStateException e) {
-            // Log configuration errors but don't retry - these are not transient errors
-            LOGGER.errorf("Webhook configuration error: %s", e.getMessage());
+            LOGGER.error("Webhook configuration error: {}", e.getMessage());
         } catch (Exception e) {
-            // Log any other unexpected errors
-            LOGGER.errorf("Unexpected error scheduling webhook: %s", e.getMessage());
+            LOGGER.error("Unexpected error scheduling webhook: {}", e.getMessage());
         }
     }
 
-    /**
-     * Executes the webhook HTTP request with retry logic.
-     * <p>
-     * This method is designed to be run asynchronously by the executor service.
-     * It sends the HTTP request to the webhook endpoint and implements retry logic
-     * with exponential backoff for transient failures.
-     * 
-     * @param apiUrl The webhook URL to send the request to
-     * @param apiKey The API key for authentication
-     * @param payload The payload to send in the request
-     */
+    @FunctionalInterface
+    private interface PayloadSupplier {
+        KeycloakUserEventDTO get() throws Exception;
+    }
+
     private void executeWebhookWithRetries(String apiUrl, String apiKey, KeycloakUserEventDTO payload) {
+        String json;
+        try {
+            json = factory.getObjectMapper().writeValueAsString(payload);
+        } catch (Exception e) {
+            LOGGER.error("Payload serialization failed: {}", e.getMessage());
+            return;
+        }
+
         int maxRetries = 3;
         int retryCount = 0;
-        boolean success = false;
+        LOGGER.info("Starting webhook execution: eventType={}, apiUrl={}, maxRetries={}", payload.getType(), apiUrl, maxRetries);
 
-        while (!success && retryCount < maxRetries) {
+        while (retryCount < maxRetries) {
             try {
-                // Set the HTTP headers, including the API Key
-                HttpHeaders requestHeaders = new HttpHeaders();
-                requestHeaders.setBearerAuth(apiKey);
-                requestHeaders.setContentType(MediaType.APPLICATION_JSON);
+                HttpPost request = new HttpPost(apiUrl);
+                request.setHeader("Authorization", "Bearer " + apiKey);
+                request.setHeader("Content-Type", "application/json");
+                request.setEntity(new StringEntity(json, ContentType.APPLICATION_JSON));
 
-                // Create the request entity
-                HttpEntity<KeycloakUserEventDTO> requestEntity = new HttpEntity<>(payload, requestHeaders);
+                LOGGER.info("Sending HTTP POST to {} (attempt {}/{})", apiUrl, retryCount + 1, maxRetries);
+                int status = factory.getHttpClient().execute(request, response -> response.getCode());
 
-                // Create the HTTP request
-                RestClient restClient = createRestClient();
-                ResponseEntity<String> responseEntity = restClient.post()
-                        .uri(apiUrl)
-                        .body(requestEntity.getBody())
-                        .headers(httpHeaders -> httpHeaders.addAll(requestEntity.getHeaders()))
-                        .retrieve()
-                        .toEntity(String.class);
-
-                // handle the response
-                if (responseEntity.getStatusCode().is2xxSuccessful()) {
-                    LOGGER.debugf("Webhook triggered successfully.");
-                    success = true;
+                if (status >= 200 && status < 300) {
+                    LOGGER.info("Webhook success: eventType={}, apiUrl={}, status={}", payload.getType(), apiUrl, status);
+                    factory.getCircuitBreaker().recordSuccess();
+                    return;
+                } else if (status >= 400 && status < 500) {
+                    LOGGER.error("Webhook rejected (4xx={}), not retrying. Check api.url and api.key.", status);
+                    factory.getCircuitBreaker().recordFailure();
+                    return;
                 } else {
-                    LOGGER.errorf("Failed to trigger webhook. Status code: %s", responseEntity.getStatusCode());
+                    LOGGER.warn("Webhook server error (5xx={}), attempt {}/{}", status, retryCount + 1, maxRetries);
                 }
             } catch (Exception e) {
-                retryCount++;
-                LOGGER.errorf("Webhook call failed (attempt %s/%s): %s", retryCount, maxRetries, e.getMessage());
-                if (retryCount < maxRetries) {
-                    try {
-                        // Exponential backoff: wait longer between each retry
-                        TimeUnit.SECONDS.sleep(retryCount);
-                    } catch (InterruptedException ie) {
-                        Thread.currentThread().interrupt();
-                        break;
-                    }
+                LOGGER.warn("Webhook call failed, attempt {}/{}: {}", retryCount + 1, maxRetries, e.getMessage());
+            }
+
+            retryCount++;
+            if (retryCount < maxRetries) {
+                try {
+                    TimeUnit.MILLISECONDS.sleep(100L * (1L << retryCount));
+                } catch (InterruptedException ie) {
+                    Thread.currentThread().interrupt();
+                    return;
                 }
             }
         }
+
+        factory.getCircuitBreaker().recordFailure();
+        LOGGER.info("Webhook failed after {} attempts: eventType={}, apiUrl={}", maxRetries, payload.getType(), apiUrl);
     }
 
-    /**
-     * Validates that the webhook configuration parameters are properly set.
-     * <p>
-     * This method checks that both the API URL and API key are present and not empty.
-     * These values are required for the webhook functionality to work correctly.
-     *
-     * @param apiUrl The webhook URL to send requests to
-     * @param apiKey The API key used for authentication with the webhook endpoint
-     * @throws IllegalStateException if either the API URL or API key is null or empty
-     */
-    private void validateConfiguration(String apiUrl, String apiKey) throws IllegalStateException {
-        if (apiUrl == null || apiUrl.trim().isEmpty()) {
-            throw new IllegalStateException("Webhook URL is not configured");
-        }
-        if (apiKey == null || apiKey.trim().isEmpty()) {
-            throw new IllegalStateException("API key is not configured");
+    private List<String> fetchRealmRoles(UserModel user) {
+        return user.getRealmRoleMappingsStream()
+                .map(RoleModel::getName)
+                .collect(Collectors.toList());
+    }
+
+    private List<OrgDetailDTO> fetchOrganizations(UserModel user) {
+        try {
+            OrganizationProvider orgProvider = session.getProvider(OrganizationProvider.class);
+            if (orgProvider == null || !orgProvider.isEnabled()) {
+                return Collections.emptyList();
+            }
+            return orgProvider.getByMember(user)
+                    .map(org -> new OrgDetailDTO(org.getId(), org.getName(), org.getAlias()))
+                    .collect(Collectors.toList());
+        } catch (Exception e) {
+            LOGGER.warn("Failed to fetch organizations for user {}: {}", user.getId(), e.getMessage());
+            return Collections.emptyList();
         }
     }
 
     /**
      * Creates a data transfer object containing user event information for the webhook payload.
      * <p>
-     * This method constructs a KeycloakUserEventDTO object with relevant user information
-     * extracted from the Keycloak UserModel and the event type. The payload includes:
-     * - Event type (e.g., REGISTER, LOGIN)
-     * - User identification (ID, username, email)
-     * - User profile information (first name, last name)
-     * - Account status (email verification)
-     * - Timestamps
-     * - Request metadata (IP address, user agent)
+     * Constructs a KeycloakUserEventDTO with user information from Keycloak UserModel including
+     * event type, user ID/username/email, profile info, account status, timestamps, and request metadata.
      *
      * @param eventType The type of Keycloak event that occurred
      * @param user The Keycloak user model containing user information
-     * @return A KeycloakUserEventDTO object populated with user and event data
+     * @param adminEvent Whether this is an admin-triggered event
+     * @param trustedProxyCount Number of trusted proxies for client IP extraction
+     * @return KeycloakUserEventDTO populated with user and event data
      */
-    private KeycloakUserEventDTO createPayload(EventType eventType, UserModel user) {
+    private KeycloakUserEventDTO createPayload(String eventType, UserModel user, boolean adminEvent, int trustedProxyCount) {
+        String[] headers = RequestUtils.extractRequestHeaders(
+                session.getContext(),
+                session.getContext().getConnection().getRemoteAddr(),
+                trustedProxyCount
+        );
         return new KeycloakUserEventDTO(
-                eventType.name(), user.getId(), user.getUsername(), user.getEmail(),
+                eventType, RequestUtils.stripKeycloakIdPrefix(user.getId()), user.getUsername(), user.getEmail(),
                 user.getFirstName(), user.getLastName(),
-                user.isEmailVerified(), user.getCreatedTimestamp(),
-                // session.getContext().getConnection().getRemoteAddr(),
-                session.getContext().getRequestHeaders().getHeaderString(AppConstants.HEADER_X_FORWARDED_FOR),
-                session.getContext().getRequestHeaders().getHeaderString(HttpHeaders.USER_AGENT)
+                user.isEmailVerified(),
+                user.getCreatedTimestamp(),
+                headers[0],
+                headers[1],
+                adminEvent,
+                fetchRealmRoles(user),
+                fetchOrganizations(user)
         );
     }
 
     /**
      * Creates a data transfer object for error events using available event details.
      * <p>
-     * This method constructs a KeycloakUserEventDTO object for error scenarios where
-     * a complete user model is not available. It extracts whatever user information
-     * is available from the event details map, such as email and name fields that
-     * might have been submitted before the error occurred.
-     * <p>
-     * Since error events typically occur before a user is fully created in the system,
-     * many fields in the resulting DTO may be null or incomplete.
+     * Handles error scenarios (e.g., REGISTER_ERROR) where a complete user model is not available.
+     * Extracts available information from the event details map (email, name fields, etc.).
+     * Many fields may be null or incomplete since error typically occurs before user is fully created.
      *
      * @param eventType The type of error event that occurred (e.g., "REGISTER_ERROR")
-     * @param eventDetailMap A map containing details about the error event, which may include
-     *                      partial user information such as email or name fields
-     * @return A KeycloakUserEventDTO object populated with available error event data
+     * @param eventDetailMap Map containing details about the error event with partial user information
+     * @param adminEvent Whether this is an admin-triggered event
+     * @param trustedProxyCount Number of trusted proxies for client IP extraction
+     * @return KeycloakUserEventDTO populated with available error event data
      */
-    private KeycloakUserEventDTO createPayloadForError(String eventType, Map<String, String> eventDetailMap) {
+    private KeycloakUserEventDTO createPayloadForError(String eventType, Map<String, String> eventDetailMap, boolean adminEvent, int trustedProxyCount) {
+        String[] headers = RequestUtils.extractRequestHeaders(
+                session.getContext(),
+                session.getContext().getConnection().getRemoteAddr(),
+                trustedProxyCount
+        );
         return new KeycloakUserEventDTO(
                 eventType, null, null, eventDetailMap.get(AppConstants.EVENT_DETAIL_EMAIL),
                 eventDetailMap.get(AppConstants.EVENT_DETAIL_FIRST_NAME), eventDetailMap.get(AppConstants.EVENT_DETAIL_LAST_NAME), null, null,
-                session.getContext().getRequestHeaders().getHeaderString(AppConstants.HEADER_X_FORWARDED_FOR),
-                session.getContext().getRequestHeaders().getHeaderString(HttpHeaders.USER_AGENT)
+                headers[0], headers[1],
+                adminEvent,
+                Collections.emptyList(),
+                Collections.emptyList()
         );
-    }
-
-    /**
-     * Creates and configures a RestClient for making HTTP requests to the webhook endpoint.
-     * <p>
-     * This method initializes a Spring RestClient with specific configurations to ensure
-     * that webhook requests are secure and don't hang indefinitely. The configuration includes:
-     * - Cookie Spec: STRICT - ensures cookies are handled securely for cross-origin requests
-     * - Connect timeout: 5 seconds - maximum time to establish a connection
-     * - Response timeout: 10 seconds - maximum time to wait for a response
-     * <p>
-     * The STRICT cookie specification ensures that cookies are properly secured and will be
-     * available in cross-origin POST requests, addressing the "Non-secure context detected" issue.
-     * <p>
-     * These timeout settings help prevent webhook calls from blocking Keycloak operations
-     * for too long in case of network issues or slow responses from the webhook endpoint.
-     *
-     * @return A configured RestClient instance ready for making HTTP requests
-     */
-    private RestClient createRestClient() {
-        // Configure request with cookie spec and timeouts
-        RequestConfig requestConfig = RequestConfig.custom()
-                .setCookieSpec(StandardCookieSpec.STRICT)
-                .setConnectTimeout(5000, TimeUnit.MILLISECONDS)
-                .setResponseTimeout(10000, TimeUnit.MILLISECONDS)
-                .build();
-
-        // Create HttpClient with the request configuration
-        var httpClient = HttpClients.custom()
-                .setDefaultRequestConfig(requestConfig)
-                .build();
-
-        // Create factory with the configured HttpClient
-        HttpComponentsClientHttpRequestFactory factory = new HttpComponentsClientHttpRequestFactory(httpClient);
-
-        return RestClient.builder()
-                .requestFactory(factory)
-                .build();
     }
 
     /**
@@ -437,8 +373,127 @@ public class WebhookEventListenerProvider implements EventListenerProvider {
         // Find all user sessions and invalidate them to prevent automatic login
         session.sessions().getUserSessionsStream(realmModel, user)
                 .forEach(userSession -> {
-                    LOGGER.debugf("Removing session %s for user %s", userSession.getId(), user.getUsername());
+                    LOGGER.debug("Removing session {} for user {}", userSession.getId(), user.getUsername());
                     session.sessions().removeUserSession(realmModel, userSession);
                 });
+    }
+
+    private String extractUserIdFromPath(String resourcePath) {
+        if (resourcePath == null) return null;
+        String[] parts = resourcePath.split("/");
+        return (parts.length >= 2) ? parts[parts.length - 1] : null;
+    }
+
+    /**
+     * Creates a data transfer object from JSON representation of a user.
+     * <p>
+     * Parses user data from JSON representation (used in admin events) and constructs a payload.
+     * Falls back to userId if representation is unavailable or parsing fails.
+     *
+     * @param eventType The type of event that occurred
+     * @param representationJson JSON representation of the user
+     * @param userId Fallback user ID if representation unavailable
+     * @param adminEvent Whether this is an admin-triggered event
+     * @param trustedProxyCount Number of trusted proxies for client IP extraction
+     * @return KeycloakUserEventDTO populated from representation or fallback data
+     */
+    private KeycloakUserEventDTO createPayloadFromRepresentation(String eventType, String representationJson, String userId, boolean adminEvent, int trustedProxyCount) {
+        String[] headers = RequestUtils.extractRequestHeaders(
+                session.getContext(),
+                session.getContext().getConnection().getRemoteAddr(),
+                trustedProxyCount
+        );
+        try {
+            JsonNode node = representationJson != null ? factory.getObjectMapper().readTree(representationJson) : null;
+            String id = (node != null) ? node.path("id").asText(userId) : userId;
+
+            return new KeycloakUserEventDTO(
+                    eventType,
+                    RequestUtils.stripKeycloakIdPrefix(id),
+                    (node != null) ? node.path("username").asText(null) : null,
+                    (node != null) ? node.path("email").asText(null) : null,
+                    (node != null) ? node.path("firstName").asText(null) : null,
+                    (node != null) ? node.path("lastName").asText(null) : null,
+                    null, null, headers[0], headers[1],
+                    adminEvent,
+                    Collections.emptyList(),
+                    Collections.emptyList()
+            );
+        } catch (Exception e) {
+            LOGGER.warn("Failed to parse representation JSON: {}", e.getMessage());
+            return new KeycloakUserEventDTO(
+                    eventType, RequestUtils.stripKeycloakIdPrefix(userId), null, null, null, null,
+                    null, null, headers[0], headers[1], adminEvent,
+                    Collections.emptyList(),
+                    Collections.emptyList()
+            );
+        }
+    }
+
+    private void sendAdminWebhookToAllClients(RealmModel realm, String eventType, UserModel user, String representationJson, String userId) {
+        if (factory.getCircuitBreaker().isOpen()) {
+            LOGGER.warn("Circuit breaker open, skipping admin webhook for {}", eventType);
+            return;
+        }
+
+        realm.getClientsStream().forEach(client -> {
+            String apiUrl = client.getAttribute(AppConstants.API_URL);
+            String apiKey = client.getAttribute(AppConstants.API_KEY);
+            if (apiUrl == null || apiUrl.isBlank() || apiKey == null || apiKey.isBlank()) return;
+
+            int trustedProxyCount = RequestUtils.parseTrustedProxyCount(client.getAttribute(AppConstants.TRUSTED_PROXY_COUNT));
+            KeycloakUserEventDTO payload = buildAdminPayload(eventType, user, representationJson, userId, client.getClientId(), trustedProxyCount);
+            if (payload != null) {
+                factory.getExecutorService().submit(() -> executeWebhookWithRetries(apiUrl, apiKey, payload));
+            }
+        });
+    }
+
+    private KeycloakUserEventDTO buildAdminPayload(String eventType, UserModel user, String representationJson, String userId, String clientId, int trustedProxyCount) {
+        if (user != null) {
+            return createPayload(eventType, user, true, trustedProxyCount);
+        } else if (representationJson != null || userId != null) {
+            return createPayloadFromRepresentation(eventType, representationJson, userId, true, trustedProxyCount);
+        }
+        LOGGER.warn("Admin event {}: no user and no representation for client {}", eventType, clientId);
+        return null;
+    }
+
+    private void handleAdminDelete(AdminEvent adminEvent, RealmModel realm, boolean includeRepresentation) {
+        String userId = extractUserIdFromPath(adminEvent.getResourcePath());
+        if (userId == null) {
+            LOGGER.warn("Admin DELETE: unable to extract userId from resourcePath {}", adminEvent.getResourcePath());
+            return;
+        }
+
+        String representation = includeRepresentation ? adminEvent.getRepresentation() : null;
+        sendAdminWebhookToAllClients(realm, EventType.DELETE_ACCOUNT.name(), null, representation, userId);
+    }
+
+    private void handleAdminUpdate(AdminEvent adminEvent, RealmModel realm) {
+        String representation = adminEvent.getRepresentation();
+        if (representation == null || !representation.contains("\"enabled\"")) {
+            LOGGER.debug("Admin UPDATE on USER is not a status change — skipping");
+            return;
+        }
+
+        boolean enabled;
+        try {
+            JsonNode node = factory.getObjectMapper().readTree(representation);
+            if (!node.has("enabled")) return;
+            enabled = node.get("enabled").asBoolean();
+        } catch (Exception e) {
+            LOGGER.warn("Admin UPDATE: failed to parse representation: {}", e.getMessage());
+            return;
+        }
+
+        String eventType = enabled
+                ? AppConstants.ADMIN_EVENT_USER_ENABLED
+                : AppConstants.ADMIN_EVENT_USER_DISABLED;
+
+        String userId = extractUserIdFromPath(adminEvent.getResourcePath());
+        UserModel user = (userId != null) ? session.users().getUserById(realm, userId) : null;
+
+        sendAdminWebhookToAllClients(realm, eventType, user, representation, userId);
     }
 }

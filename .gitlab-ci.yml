@@ -1,0 +1,54 @@
+image: maven:3.9.6-eclipse-temurin-21
+
+variables:
+  MAVEN_OPTS: "-Dmaven.repo.local=.m2/repository"
+  MAVEN_CLI_OPTS: "-s .m2/settings.xml -DskipTests"
+
+cache:
+  paths:
+    - .m2/repository/
+
+stages:
+  - build
+  - release
+
+build:
+  stage: build
+  script:
+    - mvn clean package
+    - export RELEASE_VERSION=$(mvn --non-recursive help:evaluate -Dexpression=project.version -q -DforceStdout)
+    - echo "RELEASE_VERSION=$RELEASE_VERSION" >> release.env
+    - JAR_FILE=$(ls target/keycloak-client-webhook.jar)
+    - echo "Built JAR $JAR_FILE"
+    - echo "RELEASE_VERSION = $RELEASE_VERSION"
+    - awk '/^## \[Unreleased\]/{flag=1; next} /^## \[/{if(flag) exit} flag' CHANGELOG.md > release-notes.md
+  artifacts:
+    reports:
+      dotenv: release.env
+    paths:
+      - target/keycloak-client-webhook.jar
+      - release-notes.md
+    expire_in: 1 week
+  only:
+    - main
+
+release:
+  stage: release
+  image: registry.gitlab.com/gitlab-org/release-cli:latest
+  needs:
+    - job: build
+      artifacts: true
+  script:
+    - echo "Creating release v$RELEASE_VERSION"
+  release:
+    name: "Release v$RELEASE_VERSION"
+    description: "./release-notes.md"
+    tag_name: "v$RELEASE_VERSION"
+    assets:
+      links:
+        - name: keycloak-client-webhook.jar
+          url: "$CI_PROJECT_URL/-/jobs/$CI_JOB_ID/artifacts/raw/target/keycloak-client-webhook.jar"
+          link_type: other
+  only:
+    - main
+  when: on_success
