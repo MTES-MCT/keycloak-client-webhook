@@ -4,6 +4,7 @@
 package io.binarybrew.keycloak.webhook.data.dto;
 
 import com.fasterxml.jackson.annotation.JsonProperty;
+import java.util.List;
 
 /**
  * Data Transfer Object (DTO) for Keycloak user events sent to webhook endpoints.
@@ -17,7 +18,12 @@ import com.fasterxml.jackson.annotation.JsonProperty;
  */
 public class KeycloakUserEventDTO {
 
-    public KeycloakUserEventDTO(String type, String userId, String userName, String email, String firstName, String lastName, Boolean emailVerified, Long createdTimestamp, String userIp, String userAgent) {
+    public KeycloakUserEventDTO(
+            String type, String userId, String userName, String email,
+            String firstName, String lastName, Boolean emailVerified,
+            Long createdTimestamp, String userIp, String userAgent, boolean deleteByAdmin,
+            List<String> userRoles, List<OrgDetailDTO> organizations
+    ) {
         this.type = type;
         this.userId = userId;
         this.userName = userName;
@@ -28,6 +34,9 @@ public class KeycloakUserEventDTO {
         this.createdTimestamp = createdTimestamp;
         this.userIp = userIp;
         this.userAgent = userAgent;
+        this.deleteByAdmin = deleteByAdmin;
+        this.userRoles = userRoles;
+        this.organizations = organizations;
     }
 
     /**
@@ -99,5 +108,75 @@ public class KeycloakUserEventDTO {
      */
     @JsonProperty("user_agent")
     private String userAgent;
+
+    /**
+     * Indicates whether the deletion of the user was performed by an administrator.
+     */
+    @JsonProperty("delete_by_admin")
+    private boolean deleteByAdmin;
+
+    /**
+     * List of realm role names assigned to the user.
+     */
+    @JsonProperty("user_roles")
+    private List<String> userRoles;
+
+    /**
+     * List of organizations the user belongs to.
+     */
+    @JsonProperty("organizations")
+    private List<OrgDetailDTO> organizations;
+
+    public String getType() {
+        return type;
+    }
+
+    public String getUserId() {
+        return userId;
+    }
+
+    public String getUserName() {
+        return userName;
+    }
+
+    public String getEmail() {
+        return email;
+    }
+
+    public String getFirstName() {
+        return firstName;
+    }
+
+    public String getLastName() {
+        return lastName;
+    }
+
+    public Boolean getEmailVerified() {
+        return emailVerified;
+    }
+
+    public Long getCreatedTimestamp() {
+        return createdTimestamp;
+    }
+
+    public String getUserIp() {
+        return userIp;
+    }
+
+    public String getUserAgent() {
+        return userAgent;
+    }
+
+    public boolean isDeleteByAdmin() {
+        return deleteByAdmin;
+    }
+
+    public List<String> getUserRoles() {
+        return userRoles;
+    }
+
+    public List<OrgDetailDTO> getOrganizations() {
+        return organizations;
+    }
 
 }
