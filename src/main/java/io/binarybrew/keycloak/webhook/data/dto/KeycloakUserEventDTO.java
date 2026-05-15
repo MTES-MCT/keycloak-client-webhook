@@ -5,6 +5,7 @@ package io.binarybrew.keycloak.webhook.data.dto;
 
 import com.fasterxml.jackson.annotation.JsonProperty;
 import java.util.List;
+import java.util.Map;
 
 /**
  * Data Transfer Object (DTO) for Keycloak user events sent to webhook endpoints.
@@ -22,7 +23,8 @@ public class KeycloakUserEventDTO {
             String type, String userId, String userName, String email,
             String firstName, String lastName, Boolean emailVerified,
             Long createdTimestamp, String userIp, String userAgent, boolean deleteByAdmin,
-            List<String> userRoles, List<OrgDetailDTO> organizations
+            List<String> userRoles, List<OrgDetailDTO> organizations,
+            Map<String, List<String>> attributes, RealmDetailDTO realm
     ) {
         this.type = type;
         this.userId = userId;
@@ -37,6 +39,8 @@ public class KeycloakUserEventDTO {
         this.deleteByAdmin = deleteByAdmin;
         this.userRoles = userRoles;
         this.organizations = organizations;
+        this.attributes = attributes;
+        this.realm = realm;
     }
 
     /**
@@ -127,6 +131,18 @@ public class KeycloakUserEventDTO {
     @JsonProperty("organizations")
     private List<OrgDetailDTO> organizations;
 
+    /**
+     * Custom user attributes from the Keycloak registration form and profile.
+     */
+    @JsonProperty("attributes")
+    private Map<String, List<String>> attributes;
+
+    /**
+     * Realm context identifying which Keycloak realm fired the event.
+     */
+    @JsonProperty("realm")
+    private RealmDetailDTO realm;
+
     public String getType() {
         return type;
     }
@@ -177,6 +193,14 @@ public class KeycloakUserEventDTO {
 
     public List<OrgDetailDTO> getOrganizations() {
         return organizations;
+    }
+
+    public Map<String, List<String>> getAttributes() {
+        return attributes;
+    }
+
+    public RealmDetailDTO getRealm() {
+        return realm;
     }
 
 }

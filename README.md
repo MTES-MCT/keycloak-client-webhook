@@ -2,9 +2,8 @@
 
 A Keycloak extension that sends webhook notifications to external APIs when specific user events occur in Keycloak.
 
-**Author:** Chintan Buch  
-**Website:** https://mrbu.ch  
-**Version:** 2.0.0  
+**Author:** Chintan Buch
+**Website:** https://mrbu.ch
 **Keycloak Minimum Version:** 26.6
 
 ## Overview
@@ -14,7 +13,7 @@ This extension integrates with Keycloak's event system to capture user-related e
 Key features:
 - Listens for REGISTER, REGISTER_ERROR, LOGIN, LOGOUT, RESET_PASSWORD, VERIFY_EMAIL, UPDATE_EMAIL, and DELETE_ACCOUNT events
 - Sends structured JSON payloads with comprehensive user information
-- Includes user roles (realm roles) and organization membership in payload
+- Includes user roles, organization membership, custom profile attributes, and realm context in payload
 - Supports authentication with API keys
 - Implements retry logic with exponential backoff for resilient delivery
 - Circuit breaker pattern to prevent hammering failed endpoints
@@ -26,12 +25,6 @@ Key features:
 - **Keycloak:** 26.6 or higher (required for Organizations feature support)
   - Older Keycloak versions (<26.0): May work but organizations will be empty in webhook payload
 - **Maven:** for building the project
-
-### Breaking Changes in v2.0.0
-
-- **Minimum Keycloak version raised to 26.6** — organizations API used
-- Payload now includes `user_roles` and `organizations` fields — consumers must handle these fields
-- Spring Web dependency removed — no impact on end users, internal refactor
 
 ## Installation
 
@@ -146,7 +139,17 @@ The extension sends a JSON payload with the following structure:
       "name": "ACME Corporation",
       "alias": "acme"
     }
-  ]
+  ],
+  "attributes": {
+    "phone_number": ["+1-555-0100"],
+    "company": ["ACME Corporation"],
+    "job_title": ["Engineer"]
+  },
+  "realm": {
+    "id": "a3f8c2d1-1234-5678-abcd-000000000001",
+    "name": "myrealm",
+    "display_name": "My Application Realm"
+  }
 }
 ```
 
@@ -167,6 +170,8 @@ The extension sends a JSON payload with the following structure:
 | `delete_by_admin` | boolean | Whether deletion was admin-triggered |
 | `user_roles` | array | List of realm role names assigned to user |
 | `organizations` | array | List of organizations user belongs to (id, name, alias) |
+| `attributes` | object | Custom user attributes defined in Realm Settings → User Profile (filtered; internal Keycloak attrs excluded) |
+| `realm` | object | Realm context: `id`, `name`, `display_name` |
 
 ## Supported Events
 
@@ -192,7 +197,10 @@ The extension currently listens for the following Keycloak events:
 
 ### HTTP Connection Issues
 
-The extension implements retry logic with exponential backoff. If there are temporary connection issues, it will retry up to 3 times with exponential backoff (200ms, 400ms). 4xx errors fail fast without retrying — check your `api.url` and `api.key` if you see those. Since webhook calls are executed asynchronously, these retries happen in the background and don't affect Keycloak's performance or user experience.
+The extension implements retry logic with exponential backoff.
+If there are temporary connection issues, it will retry up to 3 times with exponential backoff (200ms, 400ms).
+4xx errors fail fast without retrying — check your `api.url` and `api.key` if you see those.
+Since webhook calls are executed asynchronously, these retries happen in the background and don't affect Keycloak's performance or user experience.
 
 ### Organizations Field Empty in Webhook
 
@@ -204,11 +212,8 @@ If `organizations` array is always empty even for users in orgs:
 
 ### Incompatible Keycloak Version
 
-This extension requires **Keycloak 26.6 or higher**. Older versions lack the OrganizationProvider API. If using older Keycloak, consider forking and removing the org-related code.
-
-
-
-
+This extension requires **Keycloak 26.6 or higher**. Older versions lack the OrganizationProvider API.
+If using older Keycloak, consider forking and removing the org-related code.
 
 ## v2.0.0 Major Release
 
