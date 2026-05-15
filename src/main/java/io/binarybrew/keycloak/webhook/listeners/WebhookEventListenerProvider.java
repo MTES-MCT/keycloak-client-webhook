@@ -3,10 +3,12 @@
  */
 package io.binarybrew.keycloak.webhook.listeners;
 
+import com.fasterxml.jackson.core.type.TypeReference;
 import com.fasterxml.jackson.databind.JsonNode;
 import io.binarybrew.keycloak.webhook.constant.AppConstants;
 import io.binarybrew.keycloak.webhook.data.dto.KeycloakUserEventDTO;
 import io.binarybrew.keycloak.webhook.data.dto.OrgDetailDTO;
+import io.binarybrew.keycloak.webhook.data.dto.RealmDetailDTO;
 import io.binarybrew.keycloak.webhook.util.RequestUtils;
 import org.apache.hc.client5.http.classic.methods.HttpPost;
 import org.apache.hc.core5.http.ContentType;
@@ -22,6 +24,8 @@ import org.keycloak.models.RealmModel;
 import org.keycloak.models.RoleModel;
 import org.keycloak.models.UserModel;
 import org.keycloak.organization.OrganizationProvider;
+import org.keycloak.userprofile.UserProfileContext;
+import org.keycloak.userprofile.UserProfileProvider;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -125,7 +129,8 @@ public class WebhookEventListenerProvider implements EventListenerProvider {
             if (event.getType() == EventType.REGISTER_ERROR) {
                 if (event.getDetails() != null) {
                     LOGGER.error("{} for {}", EventType.REGISTER_ERROR.name(), event.getDetails().get("email"));
-                    sendWebhookRequestForError(event, e.apiUrl, e.apiKey, false, AppConstants.DEFAULT_TRUSTED_PROXY_COUNT);
+                    RealmModel errorRealm = session.realms().getRealm(event.getRealmId());
+                    sendWebhookRequestForError(event, e.apiUrl, e.apiKey, false, AppConstants.DEFAULT_TRUSTED_PROXY_COUNT, errorRealm);
                 }
                 return;
             }
@@ -139,7 +144,7 @@ public class WebhookEventListenerProvider implements EventListenerProvider {
 
         // Handle different events
         if (keycloakSessionDetails.userModel != null && SUPPORTED_EVENTS.contains(event.getType())) {
-            sendWebhookRequest(event, keycloakSessionDetails.userModel, keycloakSessionDetails.apiUrl, keycloakSessionDetails.apiKey, false, keycloakSessionDetails.trustedProxyCount);
+            sendWebhookRequest(event, keycloakSessionDetails.userModel, keycloakSessionDetails.apiUrl, keycloakSessionDetails.apiKey, false, keycloakSessionDetails.trustedProxyCount, keycloakSessionDetails.realmModel);
         }
     }
 
@@ -179,8 +184,8 @@ public class WebhookEventListenerProvider implements EventListenerProvider {
      * @param adminEvent Whether this is an admin-triggered event
      * @param trustedProxyCount Number of trusted proxies for client IP extraction
      */
-    private void sendWebhookRequest(Event event, UserModel user, String apiUrl, String apiKey, boolean adminEvent, int trustedProxyCount) throws IllegalStateException {
-        sendWebhookAsync(event.getType().name(), apiUrl, apiKey, () -> createPayload(event.getType().name(), user, adminEvent, trustedProxyCount), "event");
+    private void sendWebhookRequest(Event event, UserModel user, String apiUrl, String apiKey, boolean adminEvent, int trustedProxyCount, RealmModel realm) {
+        sendWebhookAsync(event.getType().name(), apiUrl, apiKey, () -> createPayload(event.getType().name(), user, adminEvent, trustedProxyCount, realm), "event");
     }
 
     /**
@@ -195,8 +200,8 @@ public class WebhookEventListenerProvider implements EventListenerProvider {
      * @param adminEvent Whether this is an admin-triggered event
      * @param trustedProxyCount Number of trusted proxies for client IP extraction
      */
-    private void sendWebhookRequestForError(Event event, String apiUrl, String apiKey, boolean adminEvent, int trustedProxyCount) throws IllegalStateException {
-        sendWebhookAsync(event.getType().name(), apiUrl, apiKey, () -> createPayloadForError(event.getType().name(), event.getDetails(), adminEvent, trustedProxyCount), "error event");
+    private void sendWebhookRequestForError(Event event, String apiUrl, String apiKey, boolean adminEvent, int trustedProxyCount, RealmModel realm) {
+        sendWebhookAsync(event.getType().name(), apiUrl, apiKey, () -> createPayloadForError(event.getType().name(), event.getDetails(), adminEvent, trustedProxyCount, realm), "error event");
     }
 
     private void sendWebhookAsync(String eventType, String apiUrl, String apiKey, PayloadSupplier payloadSupplier, String logContext) {
@@ -280,6 +285,24 @@ public class WebhookEventListenerProvider implements EventListenerProvider {
                 .collect(Collectors.toList());
     }
 
+    private Map<String, List<String>> fetchUserAttributes(UserModel user) {
+        try {
+            UserProfileProvider upProvider = session.getProvider(UserProfileProvider.class);
+            if (upProvider == null) {
+                return Collections.emptyMap();
+            }
+            Set<String> profileKeys = upProvider.create(UserProfileContext.ACCOUNT, user)
+                    .getAttributes()
+                    .nameSet();
+            return user.getAttributes().entrySet().stream()
+                    .filter(e -> profileKeys.contains(e.getKey()))
+                    .collect(Collectors.toMap(Map.Entry::getKey, Map.Entry::getValue));
+        } catch (Exception e) {
+            LOGGER.warn("Failed to fetch user profile attributes for {}: {}", user.getId(), e.getMessage());
+            return Collections.emptyMap();
+        }
+    }
+
     private List<OrgDetailDTO> fetchOrganizations(UserModel user) {
         try {
             OrganizationProvider orgProvider = session.getProvider(OrganizationProvider.class);
@@ -307,12 +330,15 @@ public class WebhookEventListenerProvider implements EventListenerProvider {
      * @param trustedProxyCount Number of trusted proxies for client IP extraction
      * @return KeycloakUserEventDTO populated with user and event data
      */
-    private KeycloakUserEventDTO createPayload(String eventType, UserModel user, boolean adminEvent, int trustedProxyCount) {
+    private KeycloakUserEventDTO createPayload(String eventType, UserModel user, boolean adminEvent, int trustedProxyCount, RealmModel realm) {
         String[] headers = RequestUtils.extractRequestHeaders(
                 session.getContext(),
                 session.getContext().getConnection().getRemoteAddr(),
                 trustedProxyCount
         );
+        RealmDetailDTO realmDetail = realm != null
+                ? new RealmDetailDTO(realm.getId(), realm.getName(), realm.getDisplayName())
+                : null;
         return new KeycloakUserEventDTO(
                 eventType, RequestUtils.stripKeycloakIdPrefix(user.getId()), user.getUsername(), user.getEmail(),
                 user.getFirstName(), user.getLastName(),
@@ -322,7 +348,9 @@ public class WebhookEventListenerProvider implements EventListenerProvider {
                 headers[1],
                 adminEvent,
                 fetchRealmRoles(user),
-                fetchOrganizations(user)
+                fetchOrganizations(user),
+                fetchUserAttributes(user),
+                realmDetail
         );
     }
 
@@ -339,19 +367,24 @@ public class WebhookEventListenerProvider implements EventListenerProvider {
      * @param trustedProxyCount Number of trusted proxies for client IP extraction
      * @return KeycloakUserEventDTO populated with available error event data
      */
-    private KeycloakUserEventDTO createPayloadForError(String eventType, Map<String, String> eventDetailMap, boolean adminEvent, int trustedProxyCount) {
+    private KeycloakUserEventDTO createPayloadForError(String eventType, Map<String, String> eventDetailMap, boolean adminEvent, int trustedProxyCount, RealmModel realm) {
         String[] headers = RequestUtils.extractRequestHeaders(
                 session.getContext(),
                 session.getContext().getConnection().getRemoteAddr(),
                 trustedProxyCount
         );
+        RealmDetailDTO realmDetail = realm != null
+                ? new RealmDetailDTO(realm.getId(), realm.getName(), realm.getDisplayName())
+                : null;
         return new KeycloakUserEventDTO(
                 eventType, null, null, eventDetailMap.get(AppConstants.EVENT_DETAIL_EMAIL),
                 eventDetailMap.get(AppConstants.EVENT_DETAIL_FIRST_NAME), eventDetailMap.get(AppConstants.EVENT_DETAIL_LAST_NAME), null, null,
                 headers[0], headers[1],
                 adminEvent,
                 Collections.emptyList(),
-                Collections.emptyList()
+                Collections.emptyList(),
+                Collections.emptyMap(),
+                realmDetail
         );
     }
 
@@ -397,15 +430,25 @@ public class WebhookEventListenerProvider implements EventListenerProvider {
      * @param trustedProxyCount Number of trusted proxies for client IP extraction
      * @return KeycloakUserEventDTO populated from representation or fallback data
      */
-    private KeycloakUserEventDTO createPayloadFromRepresentation(String eventType, String representationJson, String userId, boolean adminEvent, int trustedProxyCount) {
+    private KeycloakUserEventDTO createPayloadFromRepresentation(String eventType, String representationJson, String userId, boolean adminEvent, int trustedProxyCount, RealmModel realm) {
         String[] headers = RequestUtils.extractRequestHeaders(
                 session.getContext(),
                 session.getContext().getConnection().getRemoteAddr(),
                 trustedProxyCount
         );
+        RealmDetailDTO realmDetail = realm != null
+                ? new RealmDetailDTO(realm.getId(), realm.getName(), realm.getDisplayName())
+                : null;
         try {
             JsonNode node = representationJson != null ? factory.getObjectMapper().readTree(representationJson) : null;
             String id = (node != null) ? node.path("id").asText(userId) : userId;
+            Map<String, List<String>> attributes = null;
+            if (node != null && node.has("attributes")) {
+                attributes = factory.getObjectMapper().convertValue(
+                        node.path("attributes"),
+                        new TypeReference<Map<String, List<String>>>() {}
+                );
+            }
 
             return new KeycloakUserEventDTO(
                     eventType,
@@ -417,7 +460,9 @@ public class WebhookEventListenerProvider implements EventListenerProvider {
                     null, null, headers[0], headers[1],
                     adminEvent,
                     Collections.emptyList(),
-                    Collections.emptyList()
+                    Collections.emptyList(),
+                    attributes,
+                    realmDetail
             );
         } catch (Exception e) {
             LOGGER.warn("Failed to parse representation JSON: {}", e.getMessage());
@@ -425,7 +470,9 @@ public class WebhookEventListenerProvider implements EventListenerProvider {
                     eventType, RequestUtils.stripKeycloakIdPrefix(userId), null, null, null, null,
                     null, null, headers[0], headers[1], adminEvent,
                     Collections.emptyList(),
-                    Collections.emptyList()
+                    Collections.emptyList(),
+                    null,
+                    realmDetail
             );
         }
     }
@@ -442,18 +489,18 @@ public class WebhookEventListenerProvider implements EventListenerProvider {
             if (apiUrl == null || apiUrl.isBlank() || apiKey == null || apiKey.isBlank()) return;
 
             int trustedProxyCount = RequestUtils.parseTrustedProxyCount(client.getAttribute(AppConstants.TRUSTED_PROXY_COUNT));
-            KeycloakUserEventDTO payload = buildAdminPayload(eventType, user, representationJson, userId, client.getClientId(), trustedProxyCount);
+            KeycloakUserEventDTO payload = buildAdminPayload(eventType, user, representationJson, userId, client.getClientId(), trustedProxyCount, realm);
             if (payload != null) {
                 factory.getExecutorService().submit(() -> executeWebhookWithRetries(apiUrl, apiKey, payload));
             }
         });
     }
 
-    private KeycloakUserEventDTO buildAdminPayload(String eventType, UserModel user, String representationJson, String userId, String clientId, int trustedProxyCount) {
+    private KeycloakUserEventDTO buildAdminPayload(String eventType, UserModel user, String representationJson, String userId, String clientId, int trustedProxyCount, RealmModel realm) {
         if (user != null) {
-            return createPayload(eventType, user, true, trustedProxyCount);
+            return createPayload(eventType, user, true, trustedProxyCount, realm);
         } else if (representationJson != null || userId != null) {
-            return createPayloadFromRepresentation(eventType, representationJson, userId, true, trustedProxyCount);
+            return createPayloadFromRepresentation(eventType, representationJson, userId, true, trustedProxyCount, realm);
         }
         LOGGER.warn("Admin event {}: no user and no representation for client {}", eventType, clientId);
         return null;
