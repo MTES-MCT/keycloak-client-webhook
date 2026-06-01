@@ -215,6 +215,32 @@ If `organizations` array is always empty even for users in orgs:
 This extension requires **Keycloak 26.6 or higher**. Older versions lack the OrganizationProvider API.
 If using older Keycloak, consider forking and removing the org-related code.
 
+## CI/CD Pipeline
+
+The GitLab CI pipeline (`.gitlab-ci.yml`) has two stages:
+
+| Stage | What it does |
+|---|---|
+| `build` | Compiles JAR, uploads to GitLab Package Registry, extracts release notes from `CHANGELOG.md` |
+| `release` | Creates GitLab Release with tag and asset link pointing to Package Registry |
+
+### POM.xml Dependencies
+
+The pipeline reads values directly from `pom.xml` — no hardcoded values:
+
+| CI Variable | POM Source | Example                              |
+|---|---|--------------------------------------|
+| `RELEASE_VERSION` | `project.version` | `1.0.0`                              |
+| `ARTIFACT_ID` | `project.artifactId` | `keycloak-client-webhook`            |
+| `JAR_FILE` | `target/${ARTIFACT_ID}.jar` (resolved from `project.artifactId`) | `target/keycloak-client-webhook.jar` |
+
+Package Registry URL pattern:
+```
+$CI_API_V4_URL/projects/$CI_PROJECT_ID/packages/generic/$ARTIFACT_ID/v$RELEASE_VERSION/$ARTIFACT_ID.jar
+```
+
+Release tag is `v$RELEASE_VERSION` (e.g. `v1.0.0`). To release a new version, bump `<version>` in `pom.xml` and push to `main`.
+
 ## v2.0.0 Major Release
 
 ✨ **Payload Enrichment**

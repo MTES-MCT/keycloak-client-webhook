@@ -17,16 +17,23 @@ build:
   script:
     - mvn clean package
     - export RELEASE_VERSION=$(mvn --non-recursive help:evaluate -Dexpression=project.version -q -DforceStdout)
+    - export ARTIFACT_ID=$(mvn --non-recursive help:evaluate -Dexpression=project.artifactId -q -DforceStdout)
+    - export JAR_FILE=$(ls target/${ARTIFACT_ID}.jar)
     - echo "RELEASE_VERSION=$RELEASE_VERSION" >> release.env
-    - JAR_FILE=$(ls target/keycloak-client-webhook.jar)
+    - echo "ARTIFACT_ID=$ARTIFACT_ID" >> release.env
+    - echo "JAR_FILE=$JAR_FILE" >> release.env
     - echo "Built JAR $JAR_FILE"
     - echo "RELEASE_VERSION = $RELEASE_VERSION"
     - awk '/^## \[Unreleased\]/{flag=1; next} /^## \[/{if(flag) exit} flag' CHANGELOG.md > release-notes.md
+    - |
+      curl --fail --header "JOB-TOKEN: $CI_JOB_TOKEN" \
+           --header "Content-Type: application/java-archive" \
+           --upload-file $JAR_FILE \
+           "$CI_API_V4_URL/projects/$CI_PROJECT_ID/packages/generic/$ARTIFACT_ID/v$RELEASE_VERSION/$ARTIFACT_ID.jar"
   artifacts:
     reports:
       dotenv: release.env
     paths:
-      - target/keycloak-client-webhook.jar
       - release-notes.md
     expire_in: 1 week
   only:
@@ -46,9 +53,9 @@ release:
     tag_name: "v$RELEASE_VERSION"
     assets:
       links:
-        - name: keycloak-client-webhook.jar
-          url: "$CI_PROJECT_URL/-/jobs/$CI_JOB_ID/artifacts/raw/target/keycloak-client-webhook.jar"
-          link_type: other
+        - name: "$ARTIFACT_ID.jar"
+          url: "$CI_API_V4_URL/projects/$CI_PROJECT_ID/packages/generic/$ARTIFACT_ID/v$RELEASE_VERSION/$ARTIFACT_ID.jar"
+          link_type: package
   only:
     - main
   when: on_success
