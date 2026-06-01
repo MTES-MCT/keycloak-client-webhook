@@ -484,6 +484,9 @@ public class WebhookEventListenerProvider implements EventListenerProvider {
         }
 
         realm.getClientsStream().forEach(client -> {
+            // null check and disabled/public client filter
+            if (client == null || !client.isEnabled()) return;
+
             String apiUrl = client.getAttribute(AppConstants.API_URL);
             String apiKey = client.getAttribute(AppConstants.API_KEY);
             if (apiUrl == null || apiUrl.isBlank() || apiKey == null || apiKey.isBlank()) return;

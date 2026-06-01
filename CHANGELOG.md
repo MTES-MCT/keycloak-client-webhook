@@ -5,6 +5,30 @@ All notable changes to this project are documented here.
 ---
 
 ## [Unreleased]
+### Changed
+- Null check and disabled clients filter added to webhook event processing
+
+## [2.0.1] — 2026-05-16
+
+### Added
+
+- Realm context (`realm.id`, `realm.name`, `realm.display_name`) included in every webhook payload — identifies source realm for multi-realm deployments routing events to shared endpoints
+- Custom user attributes (`attributes`) included in webhook payload — schema-defined fields from Keycloak's `UserProfileProvider`; internal Keycloak attributes excluded
+- `RealmDetailDTO` — new DTO carrying realm metadata
+
+### Changed
+
+- `KeycloakUserEventDTO` — two new fields: `attributes` (`Map<String, List<String>>`), `realm` (`RealmDetailDTO`)
+- `createPayload`, `createPayloadForError`, `createPayloadFromRepresentation` — all accept and populate `RealmModel`
+- `REGISTER_ERROR` events now include realm context
+
+### Notes
+
+- Attribute fetch fails gracefully — returns empty map and logs WARN; never throws or blocks event processing
+
+---
+
+## [2.0.0] — 2026-05-15
 
 ### Breaking Changes
 
