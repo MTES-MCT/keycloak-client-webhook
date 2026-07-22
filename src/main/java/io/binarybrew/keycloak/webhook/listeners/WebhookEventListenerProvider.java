@@ -19,12 +19,8 @@ import org.keycloak.events.EventType;
 import org.keycloak.events.admin.AdminEvent;
 import org.keycloak.events.admin.OperationType;
 import org.keycloak.events.admin.ResourceType;
-import org.keycloak.models.KeycloakSession;
-import org.keycloak.models.RealmModel;
-import org.keycloak.models.RoleModel;
-import org.keycloak.models.UserModel;
+import org.keycloak.models.*;
 import org.keycloak.organization.OrganizationProvider;
-import org.keycloak.userprofile.UserProfileContext;
 import org.keycloak.userprofile.UserProfileProvider;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -64,11 +60,6 @@ public class WebhookEventListenerProvider implements EventListenerProvider {
 
     private static final Logger LOGGER = LoggerFactory.getLogger(WebhookEventListenerProvider.class);
 
-    private static final Set<EventType> SUPPORTED_EVENTS = EnumSet.of(
-            EventType.REGISTER, EventType.RESET_PASSWORD, EventType.LOGIN,
-            EventType.LOGOUT, EventType.VERIFY_EMAIL, EventType.UPDATE_EMAIL,
-            EventType.DELETE_ACCOUNT
-    );
 
     public WebhookEventListenerProvider(
             KeycloakSession session,
@@ -114,9 +105,45 @@ public class WebhookEventListenerProvider implements EventListenerProvider {
     @Override
     public void onEvent(Event event) {
         LOGGER.info("Webhook event received: type={}, userId={}, realmId={}", event.getType().name(), event.getUserId(), event.getRealmId());
+
+        RealmModel realm = session.realms().getRealm(event.getRealmId());
+        if (realm == null) {
+            LOGGER.error("WebhookEventListenerProvider > onEvent(event) > Realm not found for id {}", event.getRealmId());
+            return;
+        }
+
+        ClientModel client = session.getContext().getClient();
+        if (client == null && event.getClientId() != null) {
+            client = realm.getClientByClientId(event.getClientId());
+        }
+
+        if (client == null) {
+            LOGGER.error("WebhookEventListenerProvider > onEvent(event) > ClientModel is null.");
+            return;
+        }
+
+        String allowedEventsAttr = client.getAttribute(AppConstants.API_EVENTS);
+        if (allowedEventsAttr == null || allowedEventsAttr.trim().isEmpty()) {
+            allowedEventsAttr = client.getAttribute("api.events.url"); // fallback for typo
+        }
+        if (allowedEventsAttr == null || allowedEventsAttr.trim().isEmpty()) {
+            LOGGER.debug("No api.events configured or empty for client {}. Skipping event {}.", client.getClientId(), event.getType().name());
+            return;
+        }
+
+        Set<String> allowedEvents = Arrays.stream(allowedEventsAttr.split(","))
+                .map(String::trim)
+                .filter(s -> !s.isEmpty())
+                .collect(Collectors.toSet());
+
+        if (!allowedEvents.contains(event.getType().name())) {
+            LOGGER.debug("Event {} is not in configured api.events list {} for client {}. Skipping.", event.getType().name(), allowedEventsAttr, client.getClientId());
+            return;
+        }
+
         KeycloakSessionDetails keycloakSessionDetails;
         try {
-            keycloakSessionDetails = new KeycloakSessionDetails(session, event.getRealmId(), event.getUserId());
+            keycloakSessionDetails = new KeycloakSessionDetails(session, realm, client, event.getUserId());
         } catch (IllegalStateException e) {
             LOGGER.error("WebhookEventListenerProvider > onEvent(event) > ClientModel is null.");
             return;
@@ -125,14 +152,10 @@ public class WebhookEventListenerProvider implements EventListenerProvider {
             return;
         } catch (NoUserFoundException e) {
             LOGGER.debug("{}", e.getMessage());
-            // Handle registration error
-            if (event.getType() == EventType.REGISTER_ERROR) {
-                if (event.getDetails() != null) {
-                    LOGGER.error("{} for {}", EventType.REGISTER_ERROR.name(), event.getDetails().get("email"));
-                    RealmModel errorRealm = session.realms().getRealm(event.getRealmId());
-                    sendWebhookRequestForError(event, e.apiUrl, e.apiKey, false, AppConstants.DEFAULT_TRUSTED_PROXY_COUNT, errorRealm);
-                }
-                return;
+            // Handle error events dynamically (e.g. REGISTER_ERROR, LOGIN_ERROR)
+            if (event.getType().name().endsWith("_ERROR")) {
+                RealmModel errorRealm = session.realms().getRealm(event.getRealmId());
+                sendWebhookRequestForError(event, e.apiUrl, e.apiKey, false, AppConstants.DEFAULT_TRUSTED_PROXY_COUNT, errorRealm);
             }
             return;
         }
@@ -143,7 +166,7 @@ public class WebhookEventListenerProvider implements EventListenerProvider {
         }
 
         // Handle different events
-        if (keycloakSessionDetails.userModel != null && SUPPORTED_EVENTS.contains(event.getType())) {
+        if (keycloakSessionDetails.userModel != null) {
             sendWebhookRequest(event, keycloakSessionDetails.userModel, keycloakSessionDetails.apiUrl, keycloakSessionDetails.apiKey, false, keycloakSessionDetails.trustedProxyCount, keycloakSessionDetails.realmModel);
         }
     }
@@ -177,11 +200,11 @@ public class WebhookEventListenerProvider implements EventListenerProvider {
      * Constructs a payload with user event information and schedules an asynchronous HTTP POST request
      * to the configured endpoint. Implements retry mechanism with exponential backoff for transient failures.
      *
-     * @param event The Keycloak event that triggered this webhook
-     * @param user The user model associated with the event
-     * @param apiUrl The webhook URL to send the request to
-     * @param apiKey The API key used for authentication with the webhook endpoint
-     * @param adminEvent Whether this is an admin-triggered event
+     * @param event             The Keycloak event that triggered this webhook
+     * @param user              The user model associated with the event
+     * @param apiUrl            The webhook URL to send the request to
+     * @param apiKey            The API key used for authentication with the webhook endpoint
+     * @param adminEvent        Whether this is an admin-triggered event
      * @param trustedProxyCount Number of trusted proxies for client IP extraction
      */
     private void sendWebhookRequest(Event event, UserModel user, String apiUrl, String apiKey, boolean adminEvent, int trustedProxyCount, RealmModel realm) {
@@ -194,10 +217,10 @@ public class WebhookEventListenerProvider implements EventListenerProvider {
      * Handles error scenarios (e.g., REGISTER_ERROR) where a complete user model is not available.
      * Extracts whatever information is available from the event details map.
      *
-     * @param event The Keycloak error event
-     * @param apiUrl The webhook URL to send the request to
-     * @param apiKey The API key used for authentication with the webhook endpoint
-     * @param adminEvent Whether this is an admin-triggered event
+     * @param event             The Keycloak error event
+     * @param apiUrl            The webhook URL to send the request to
+     * @param apiKey            The API key used for authentication with the webhook endpoint
+     * @param adminEvent        Whether this is an admin-triggered event
      * @param trustedProxyCount Number of trusted proxies for client IP extraction
      */
     private void sendWebhookRequestForError(Event event, String apiUrl, String apiKey, boolean adminEvent, int trustedProxyCount, RealmModel realm) {
@@ -291,11 +314,7 @@ public class WebhookEventListenerProvider implements EventListenerProvider {
             if (upProvider == null) {
                 return Collections.emptyMap();
             }
-            Set<String> profileKeys = upProvider.create(UserProfileContext.ACCOUNT, user)
-                    .getAttributes()
-                    .nameSet();
             return user.getAttributes().entrySet().stream()
-                    .filter(e -> profileKeys.contains(e.getKey()))
                     .collect(Collectors.toMap(Map.Entry::getKey, Map.Entry::getValue));
         } catch (Exception e) {
             LOGGER.warn("Failed to fetch user profile attributes for {}: {}", user.getId(), e.getMessage());
@@ -324,9 +343,9 @@ public class WebhookEventListenerProvider implements EventListenerProvider {
      * Constructs a KeycloakUserEventDTO with user information from Keycloak UserModel including
      * event type, user ID/username/email, profile info, account status, timestamps, and request metadata.
      *
-     * @param eventType The type of Keycloak event that occurred
-     * @param user The Keycloak user model containing user information
-     * @param adminEvent Whether this is an admin-triggered event
+     * @param eventType         The type of Keycloak event that occurred
+     * @param user              The Keycloak user model containing user information
+     * @param adminEvent        Whether this is an admin-triggered event
      * @param trustedProxyCount Number of trusted proxies for client IP extraction
      * @return KeycloakUserEventDTO populated with user and event data
      */
@@ -361,9 +380,9 @@ public class WebhookEventListenerProvider implements EventListenerProvider {
      * Extracts available information from the event details map (email, name fields, etc.).
      * Many fields may be null or incomplete since error typically occurs before user is fully created.
      *
-     * @param eventType The type of error event that occurred (e.g., "REGISTER_ERROR")
-     * @param eventDetailMap Map containing details about the error event with partial user information
-     * @param adminEvent Whether this is an admin-triggered event
+     * @param eventType         The type of error event that occurred (e.g., "REGISTER_ERROR")
+     * @param eventDetailMap    Map containing details about the error event with partial user information
+     * @param adminEvent        Whether this is an admin-triggered event
      * @param trustedProxyCount Number of trusted proxies for client IP extraction
      * @return KeycloakUserEventDTO populated with available error event data
      */
@@ -400,7 +419,7 @@ public class WebhookEventListenerProvider implements EventListenerProvider {
      * admin approval, or completion of additional registration steps.
      *
      * @param realmModel The realm model where the user exists
-     * @param user The user model whose sessions should be invalidated
+     * @param user       The user model whose sessions should be invalidated
      */
     private void disableAutoLogin(RealmModel realmModel, UserModel user) {
         // Find all user sessions and invalidate them to prevent automatic login
@@ -423,11 +442,11 @@ public class WebhookEventListenerProvider implements EventListenerProvider {
      * Parses user data from JSON representation (used in admin events) and constructs a payload.
      * Falls back to userId if representation is unavailable or parsing fails.
      *
-     * @param eventType The type of event that occurred
+     * @param eventType          The type of event that occurred
      * @param representationJson JSON representation of the user
-     * @param userId Fallback user ID if representation unavailable
-     * @param adminEvent Whether this is an admin-triggered event
-     * @param trustedProxyCount Number of trusted proxies for client IP extraction
+     * @param userId             Fallback user ID if representation unavailable
+     * @param adminEvent         Whether this is an admin-triggered event
+     * @param trustedProxyCount  Number of trusted proxies for client IP extraction
      * @return KeycloakUserEventDTO populated from representation or fallback data
      */
     private KeycloakUserEventDTO createPayloadFromRepresentation(String eventType, String representationJson, String userId, boolean adminEvent, int trustedProxyCount, RealmModel realm) {
@@ -446,7 +465,8 @@ public class WebhookEventListenerProvider implements EventListenerProvider {
             if (node != null && node.has("attributes")) {
                 attributes = factory.getObjectMapper().convertValue(
                         node.path("attributes"),
-                        new TypeReference<Map<String, List<String>>>() {}
+                        new TypeReference<>() {
+                        }
                 );
             }
 
@@ -490,6 +510,23 @@ public class WebhookEventListenerProvider implements EventListenerProvider {
             String apiUrl = client.getAttribute(AppConstants.API_URL);
             String apiKey = client.getAttribute(AppConstants.API_KEY);
             if (apiUrl == null || apiUrl.isBlank() || apiKey == null || apiKey.isBlank()) return;
+
+            String allowedEventsAttr = client.getAttribute(AppConstants.API_EVENTS);
+            if (allowedEventsAttr == null || allowedEventsAttr.trim().isEmpty()) {
+                allowedEventsAttr = client.getAttribute("api.events.url"); // fallback for typo
+            }
+            if (allowedEventsAttr == null || allowedEventsAttr.trim().isEmpty()) {
+                return;
+            }
+
+            Set<String> allowedEvents = Arrays.stream(allowedEventsAttr.split(","))
+                    .map(String::trim)
+                    .filter(s -> !s.isEmpty())
+                    .collect(Collectors.toSet());
+
+            if (!allowedEvents.contains(eventType)) {
+                return;
+            }
 
             int trustedProxyCount = RequestUtils.parseTrustedProxyCount(client.getAttribute(AppConstants.TRUSTED_PROXY_COUNT));
             KeycloakUserEventDTO payload = buildAdminPayload(eventType, user, representationJson, userId, client.getClientId(), trustedProxyCount, realm);

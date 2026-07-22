@@ -59,9 +59,12 @@ public class KeycloakSessionDetails {
      * @throws NoUserFoundException if the user cannot be found in the realm
      * @throws IllegalStateException if the client model is null
      */
-    public KeycloakSessionDetails(KeycloakSession session, String realmId, String userId) throws NoWebhookDetailException, NoUserFoundException, IllegalStateException {
-        this.clientModel = session.getContext().getClient();
-        this.realmModel = session.realms().getRealm(realmId);
+    public KeycloakSessionDetails(KeycloakSession session, RealmModel realmModel, ClientModel clientModel, String userId) throws NoWebhookDetailException, NoUserFoundException, IllegalStateException {
+        if (clientModel == null) {
+            throw new IllegalStateException("ClientModel is null.");
+        }
+        this.clientModel = clientModel;
+        this.realmModel = realmModel;
         this.userId = userId;
         this.apiUrl = this.clientModel.getAttribute(AppConstants.API_URL);
         this.apiKey = this.clientModel.getAttribute(AppConstants.API_KEY);
@@ -72,10 +75,6 @@ public class KeycloakSessionDetails {
         this.trustedProxyCount = RequestUtils.parseTrustedProxyCount(
                 clientModel.getAttribute(AppConstants.TRUSTED_PROXY_COUNT)
         );
-
-        if (this.clientModel == null) {
-            throw new IllegalStateException("ClientModel is null.");
-        }
 
         if (this.apiUrl == null || this.apiUrl.trim().isEmpty()) {
             throw new NoWebhookDetailException("API URL is not configured.");
