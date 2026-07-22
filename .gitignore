@@ -2,7 +2,7 @@
 .**
 *.bak
 !.gitignore
-!.gitlab-ci.yml
+!.github/
 !.mvn/
 
 target/

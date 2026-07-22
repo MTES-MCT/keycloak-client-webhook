@@ -95,6 +95,7 @@ curl -X PUT \
       ...existing attributes...,
       "api.url": "https://your-api.example.com/webhooks/keycloak",
       "api.key": "your-secret-token",
+      "api.events": "REGISTER,UPDATE_EMAIL,DELETE_ACCOUNT",
       "disable.autologin": "true",
       "trusted.proxy.count": "1"
     }
@@ -109,8 +110,82 @@ You can find the client UUID in the URL when viewing the client in Admin console
 |---|---|---|
 | `api.url` | Yes | Webhook endpoint URL |
 | `api.key` | Yes | Bearer token sent in Authorization header |
+| `api.events` | Yes* | Comma-separated list of events to send (ex: `REGISTER,UPDATE_EMAIL,DELETE_ACCOUNT`). **Security by default**: if not configured or empty, no events will be sent. |
 | `disable.autologin` | No | Set `true` to prevent auto-login after registration |
 | `trusted.proxy.count` | No | Reverse proxies in front of Keycloak (default: 1). Increase if client IPs are incorrect |
+
+### Available Events
+
+Here is the list of events that can be configured in the `api.events` attribute:
+
+#### User Events
+| Event / Error Variant | Description |
+|---|---|
+| `LOGIN` / `LOGIN_ERROR` | Successful user login / Login failure |
+| `REGISTER` / `REGISTER_ERROR` | User registration / Registration failure |
+| `LOGOUT` / `LOGOUT_ERROR` | User logout / Logout failure |
+| `CODE_TO_TOKEN` / `CODE_TO_TOKEN_ERROR` | Exchange authorization code for token / Failure |
+| `CLIENT_LOGIN` / `CLIENT_LOGIN_ERROR` | Client login / Client login failure |
+| `REFRESH_TOKEN` / `REFRESH_TOKEN_ERROR` | Refresh token request / Refresh token request failure |
+| `UPDATE_EMAIL` / `UPDATE_EMAIL_ERROR` | Update user email / Update user email failure |
+| `UPDATE_PROFILE` / `UPDATE_PROFILE_ERROR` | Update user profile details / Failure |
+| `VERIFY_EMAIL` / `VERIFY_EMAIL_ERROR` | Verify user email address / Failure |
+| `VERIFY_PROFILE` / `VERIFY_PROFILE_ERROR` | Verify user profile / Failure |
+| `GRANT_CONSENT` / `GRANT_CONSENT_ERROR` | Grant application consent / Failure |
+| `UPDATE_CONSENT` / `UPDATE_CONSENT_ERROR` | Update application consent / Failure |
+| `REVOKE_GRANT` / `REVOKE_GRANT_ERROR` | Revoke application consent / Failure |
+| `SEND_VERIFY_EMAIL` / `SEND_VERIFY_EMAIL_ERROR` | Send verification email / Failure |
+| `SEND_RESET_PASSWORD` / `SEND_RESET_PASSWORD_ERROR` | Send reset password link email / Failure |
+| `SEND_IDENTITY_PROVIDER_LINK` / `SEND_IDENTITY_PROVIDER_LINK_ERROR` | Send IDP account link email / Failure |
+| `RESET_PASSWORD` / `RESET_PASSWORD_ERROR` | Reset user password / Failure |
+| `RESTART_AUTHENTICATION` / `RESTART_AUTHENTICATION_ERROR` | Restart authentication flow / Failure |
+| `INVALID_SIGNATURE` / `INVALID_SIGNATURE_ERROR` | Invalid request signature detected / Failure |
+| `REGISTER_NODE` / `REGISTER_NODE_ERROR` | Register cluster node / Failure |
+| `UNREGISTER_NODE` / `UNREGISTER_NODE_ERROR` | Unregister cluster node / Failure |
+| `USER_INFO_REQUEST` / `USER_INFO_REQUEST_ERROR` | OAuth2 UserInfo endpoint request / Failure |
+| `IDENTITY_PROVIDER_LINK_ACCOUNT` / `IDENTITY_PROVIDER_LINK_ACCOUNT_ERROR` | Link external IDP account / Failure |
+| `IDENTITY_PROVIDER_LOGIN` / `IDENTITY_PROVIDER_LOGIN_ERROR` | Login via external IDP / Failure |
+| `IDENTITY_PROVIDER_FIRST_LOGIN` / `IDENTITY_PROVIDER_FIRST_LOGIN_ERROR` | First-time login via external IDP / Failure |
+| `IDENTITY_PROVIDER_POST_LOGIN` / `IDENTITY_PROVIDER_POST_LOGIN_ERROR` | Post-login flow for external IDP / Failure |
+| `IDENTITY_PROVIDER_RESPONSE` / `IDENTITY_PROVIDER_RESPONSE_ERROR` | Receive response from external IDP / Failure |
+| `IDENTITY_PROVIDER_RETRIEVE_TOKEN` / `IDENTITY_PROVIDER_RETRIEVE_TOKEN_ERROR` | Retrieve token from external IDP / Failure |
+| `IMPERSONATE` / `IMPERSONATE_ERROR` | User impersonation by admin / Failure |
+| `CUSTOM_REQUIRED_ACTION` / `CUSTOM_REQUIRED_ACTION_ERROR` | Custom user action execution / Failure |
+| `EXECUTE_ACTIONS` / `EXECUTE_ACTIONS_ERROR` | Execute multiple user actions / Failure |
+| `EXECUTE_ACTION_TOKEN` / `EXECUTE_ACTION_TOKEN_ERROR` | Execute action token flow / Failure |
+| `CLIENT_INFO` / `CLIENT_INFO_ERROR` | Retrieve client info / Failure |
+| `CLIENT_REGISTER` / `CLIENT_REGISTER_ERROR` | Register dynamic client / Failure |
+| `CLIENT_UPDATE` / `CLIENT_UPDATE_ERROR` | Update dynamic client / Failure |
+| `CLIENT_DELETE` / `CLIENT_DELETE_ERROR` | Delete dynamic client / Failure |
+| `CLIENT_INITIATED_ACCOUNT_LINKING` / `CLIENT_INITIATED_ACCOUNT_LINKING_ERROR` | Client initiated account linking flow / Failure |
+| `TOKEN_EXCHANGE` / `TOKEN_EXCHANGE_ERROR` | Exchange OAuth2 token / Failure |
+| `OAUTH2_DEVICE_AUTH` / `OAUTH2_DEVICE_AUTH_ERROR` | OAuth2 device authorization request / Failure |
+| `OAUTH2_DEVICE_VERIFY_USER_CODE` / `OAUTH2_DEVICE_VERIFY_USER_CODE_ERROR` | Verify user code for device flow / Failure |
+| `OAUTH2_DEVICE_CODE_TO_TOKEN` / `OAUTH2_DEVICE_CODE_TO_TOKEN_ERROR` | Exchange device code for token / Failure |
+| `AUTHREQID_TO_TOKEN` / `AUTHREQID_TO_TOKEN_ERROR` | Exchange CIBA request ID for token / Failure |
+| `PERMISSION_TOKEN` / `PERMISSION_TOKEN_ERROR` | Request UMA permission token / Failure |
+| `DELETE_ACCOUNT` / `DELETE_ACCOUNT_ERROR` | User deletes their account / Failure |
+| `PUSHED_AUTHORIZATION_REQUEST` / `PUSHED_AUTHORIZATION_REQUEST_ERROR` | OAuth2 PAR request / Failure |
+| `USER_DISABLED_BY_PERMANENT_LOCKOUT` / `USER_DISABLED_BY_PERMANENT_LOCKOUT_ERROR` | User permanently locked out / Failure |
+| `USER_DISABLED_BY_TEMPORARY_LOCKOUT` / `USER_DISABLED_BY_TEMPORARY_LOCKOUT_ERROR` | User temporarily locked out / Failure |
+| `OAUTH2_EXTENSION_GRANT` / `OAUTH2_EXTENSION_GRANT_ERROR` | OAuth2 extension grant request / Failure |
+| `FEDERATED_IDENTITY_OVERRIDE_LINK` / `FEDERATED_IDENTITY_OVERRIDE_LINK_ERROR` | Override existing federated ID link / Failure |
+| `UPDATE_CREDENTIAL` / `UPDATE_CREDENTIAL_ERROR` | Update user credential (e.g. password, OTP) / Failure |
+| `REMOVE_CREDENTIAL` / `REMOVE_CREDENTIAL_ERROR` | Remove user credential / Failure |
+| `INVITE_ORG` / `INVITE_ORG_ERROR` | Send organization invitation / Failure |
+| `USER_SESSION_DELETED` / `USER_SESSION_DELETED_ERROR` | User session deleted / Failure |
+| `VERIFIABLE_CREDENTIAL_REQUEST` / `VERIFIABLE_CREDENTIAL_REQUEST_ERROR` | Request verifiable credential / Failure |
+| `VERIFIABLE_CREDENTIAL_OFFER_REQUEST` / `VERIFIABLE_CREDENTIAL_OFFER_REQUEST_ERROR` | Request verifiable credential offer / Failure |
+| `VERIFIABLE_CREDENTIAL_NONCE_REQUEST` / `VERIFIABLE_CREDENTIAL_NONCE_REQUEST_ERROR` | Request verifiable credential nonce / Failure |
+| `VERIFIABLE_CREDENTIAL_CREATE_OFFER` / `VERIFIABLE_CREDENTIAL_CREATE_OFFER_ERROR` | Create verifiable credential offer / Failure |
+| `VERIFIABLE_CREDENTIAL_PRE_AUTHORIZED_GRANT` / `VERIFIABLE_CREDENTIAL_PRE_AUTHORIZED_GRANT_ERROR` | Pre-authorized grant for verifiable credential / Failure |
+| `JWT_AUTHORIZATION_GRANT` / `JWT_AUTHORIZATION_GRANT_ERROR` | JWT authorization grant request / Failure |
+
+#### Admin Events
+| Event | Description |
+|---|---|
+| `USER_ENABLED_BY_ADMIN` | Triggered when an administrator enables a user. |
+| `USER_DISABLED_BY_ADMIN` | Triggered when an administrator disables a user. |
 
 ## Webhook Payload
 
@@ -217,29 +292,16 @@ If using older Keycloak, consider forking and removing the org-related code.
 
 ## CI/CD Pipeline
 
-The GitLab CI pipeline (`.gitlab-ci.yml`) has two stages:
+The GitHub Actions CI/CD pipeline (`.github/workflows/ci.yml`) has two main jobs:
 
-| Stage | What it does |
-|---|---|
-| `build` | Compiles JAR, uploads to GitLab Package Registry, extracts release notes from `CHANGELOG.md` |
-| `release` | Creates GitLab Release with tag and asset link pointing to Package Registry |
+1. **Build and Test (`build-and-test`)**:
+   - Triggers on: Pull Requests (`pull_request`).
+   - What it does: Sets up Java 17 and compiles/runs all tests in the project using Maven (`mvn clean package`).
 
-### POM.xml Dependencies
+2. **Publish Release Asset (`publish-release-asset`)**:
+   - Triggers on: Release created (`release: created`).
+   - What it does: Packages the Maven project (`mvn clean package -DskipTests`) and uploads the generated JAR (`target/keycloak-client-webhook.jar`) as an asset directly to the GitHub release.
 
-The pipeline reads values directly from `pom.xml` — no hardcoded values:
-
-| CI Variable | POM Source | Example                              |
-|---|---|--------------------------------------|
-| `RELEASE_VERSION` | `project.version` | `1.0.0`                              |
-| `ARTIFACT_ID` | `project.artifactId` | `keycloak-client-webhook`            |
-| `JAR_FILE` | `target/${ARTIFACT_ID}.jar` (resolved from `project.artifactId`) | `target/keycloak-client-webhook.jar` |
-
-Package Registry URL pattern:
-```
-$CI_API_V4_URL/projects/$CI_PROJECT_ID/packages/generic/$ARTIFACT_ID/v$RELEASE_VERSION/$ARTIFACT_ID.jar
-```
-
-Release tag is `v$RELEASE_VERSION` (e.g. `v1.0.0`). To release a new version, bump `<version>` in `pom.xml` and push to `main`.
 
 ## v2.0.0 Major Release
 

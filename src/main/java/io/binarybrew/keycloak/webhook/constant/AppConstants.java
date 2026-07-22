@@ -16,6 +16,9 @@ public class AppConstants {
     /** Client attribute key for webhook API key (authentication token). */
     public static final String API_KEY = "api.key";
 
+    /** Client attribute key for webhook allowed events list. */
+    public static final String API_EVENTS = "api.events";
+
     /** Client attribute key to disable automatic login after user registration. */
     public static final String DISABLE_AUTOLOGIN = "disable.autologin";
 

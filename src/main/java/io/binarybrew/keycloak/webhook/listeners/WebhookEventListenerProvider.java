@@ -19,6 +19,7 @@ import org.keycloak.events.EventType;
 import org.keycloak.events.admin.AdminEvent;
 import org.keycloak.events.admin.OperationType;
 import org.keycloak.events.admin.ResourceType;
+import org.keycloak.models.ClientModel;
 import org.keycloak.models.KeycloakSession;
 import org.keycloak.models.RealmModel;
 import org.keycloak.models.RoleModel;
@@ -64,11 +65,6 @@ public class WebhookEventListenerProvider implements EventListenerProvider {
 
     private static final Logger LOGGER = LoggerFactory.getLogger(WebhookEventListenerProvider.class);
 
-    private static final Set<EventType> SUPPORTED_EVENTS = EnumSet.of(
-            EventType.REGISTER, EventType.RESET_PASSWORD, EventType.LOGIN,
-            EventType.LOGOUT, EventType.VERIFY_EMAIL, EventType.UPDATE_EMAIL,
-            EventType.DELETE_ACCOUNT
-    );
 
     public WebhookEventListenerProvider(
             KeycloakSession session,
@@ -114,6 +110,29 @@ public class WebhookEventListenerProvider implements EventListenerProvider {
     @Override
     public void onEvent(Event event) {
         LOGGER.info("Webhook event received: type={}, userId={}, realmId={}", event.getType().name(), event.getUserId(), event.getRealmId());
+
+        ClientModel client = session.getContext().getClient();
+        if (client == null) {
+            LOGGER.error("WebhookEventListenerProvider > onEvent(event) > ClientModel is null.");
+            return;
+        }
+
+        String allowedEventsAttr = client.getAttribute(AppConstants.API_EVENTS);
+        if (allowedEventsAttr == null || allowedEventsAttr.trim().isEmpty()) {
+            LOGGER.debug("No api.events configured or empty for client {}. Skipping event {}.", client.getClientId(), event.getType().name());
+            return;
+        }
+
+        Set<String> allowedEvents = Arrays.stream(allowedEventsAttr.split(","))
+                .map(String::trim)
+                .filter(s -> !s.isEmpty())
+                .collect(Collectors.toSet());
+
+        if (!allowedEvents.contains(event.getType().name())) {
+            LOGGER.debug("Event {} is not in configured api.events list {} for client {}. Skipping.", event.getType().name(), allowedEventsAttr, client.getClientId());
+            return;
+        }
+
         KeycloakSessionDetails keycloakSessionDetails;
         try {
             keycloakSessionDetails = new KeycloakSessionDetails(session, event.getRealmId(), event.getUserId());
@@ -125,14 +144,10 @@ public class WebhookEventListenerProvider implements EventListenerProvider {
             return;
         } catch (NoUserFoundException e) {
             LOGGER.debug("{}", e.getMessage());
-            // Handle registration error
-            if (event.getType() == EventType.REGISTER_ERROR) {
-                if (event.getDetails() != null) {
-                    LOGGER.error("{} for {}", EventType.REGISTER_ERROR.name(), event.getDetails().get("email"));
-                    RealmModel errorRealm = session.realms().getRealm(event.getRealmId());
-                    sendWebhookRequestForError(event, e.apiUrl, e.apiKey, false, AppConstants.DEFAULT_TRUSTED_PROXY_COUNT, errorRealm);
-                }
-                return;
+            // Handle error events dynamically (e.g. REGISTER_ERROR, LOGIN_ERROR)
+            if (event.getType().name().endsWith("_ERROR")) {
+                RealmModel errorRealm = session.realms().getRealm(event.getRealmId());
+                sendWebhookRequestForError(event, e.apiUrl, e.apiKey, false, AppConstants.DEFAULT_TRUSTED_PROXY_COUNT, errorRealm);
             }
             return;
         }
@@ -143,7 +158,7 @@ public class WebhookEventListenerProvider implements EventListenerProvider {
         }
 
         // Handle different events
-        if (keycloakSessionDetails.userModel != null && SUPPORTED_EVENTS.contains(event.getType())) {
+        if (keycloakSessionDetails.userModel != null) {
             sendWebhookRequest(event, keycloakSessionDetails.userModel, keycloakSessionDetails.apiUrl, keycloakSessionDetails.apiKey, false, keycloakSessionDetails.trustedProxyCount, keycloakSessionDetails.realmModel);
         }
     }

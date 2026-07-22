@@ -1,0 +1,56 @@
+name: GitHub CI/CD
+
+on:
+  pull_request:
+  release:
+    types: [created]
+
+jobs:
+  build-and-test:
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up JDK 17
+        uses: actions/setup-java@v4
+        with:
+          java-version: '17'
+          distribution: 'temurin'
+          cache: 'maven'
+
+      - name: Build and Test with Maven
+        run: mvn -B clean package
+
+  publish-release-asset:
+    if: github.event_name == 'release'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up JDK 17
+        uses: actions/setup-java@v4
+        with:
+          java-version: '17'
+          distribution: 'temurin'
+          cache: 'maven'
+
+      - name: Build Package
+        run: mvn -B clean package -DskipTests
+
+      - name: Upload JAR to Release
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          JAR_FILE="target/keycloak-client-webhook.jar"
+          if [ -f "$JAR_FILE" ]; then
+            echo "Uploading $JAR_FILE to release ${{ github.event.release.tag_name }}..."
+            gh release upload "${{ github.event.release.tag_name }}" "$JAR_FILE" --clobber
+          else
+            echo "Error: JAR file not found at $JAR_FILE"
+            exit 1
+          fi
